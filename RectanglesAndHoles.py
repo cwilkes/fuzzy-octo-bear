@@ -2,6 +2,26 @@ from operator import attrgetter
 import sys
 import datetime
 
+
+MAX_MILLIS = 9 * 1000 * 1000
+
+start_time = None
+
+
+class MyTimer(object):
+    def __init__(self):
+        self.start_time = datetime.datetime.now()
+
+    def delta(self):
+        dt = datetime.datetime.now() - self.start_time
+        return 1000*1000*dt.seconds + dt.microseconds
+
+    def is_over(self):
+        ret = self.delta() >= MAX_MILLIS
+        if ret:
+            lgi('Over time! %s', ret)
+        return ret
+
 def lgi(format, *msg):
     print >>sys.stderr, format % msg
     sys.stderr.flush()
@@ -103,7 +123,7 @@ class Tile(object):
         return 'Rectangle %d (w:%d,h:%d) is (%d, %d) - (%d, %d)' % (self.index, self.width, self.height, self.col, self.row, self.col+self.width, self.row+self.height)
 
 
-def _outside_box(board):
+def _outside_box(board, mt):
     total_length = 0
     for tile in board:
         total_length += tile.max_dim
@@ -116,17 +136,20 @@ def _outside_box(board):
     tile.rotate_longway(0)
     col = tile.width
     row = 0
+    lgi('Start top wall at %s', mt.delta())
     while col < side_length and tile_ids:
         tile = board[tile_ids.pop(0)]
         tile.rotate_longway(0)
         tile.move(col, row)
         col += tile.width
+    lgi('Start right wall at %s', mt.delta())
     while row > -side_length and tile_ids:
         tile = board[tile_ids.pop(0)]
         tile.rotate_longway(1)
         row -= tile.height
         tile.move(col, row)
     row += tile.height-1
+    lgi('Start bottom wall at %s', mt.delta())
     while col > 0 and tile_ids:
         tile = board[tile_ids.pop(0)]
         tile.rotate_longway(0)
@@ -135,6 +158,7 @@ def _outside_box(board):
     col = 0
     row_bottom = row
     max_width = 0
+    lgi('Start left wall at %s', mt.delta())
     while row < 1 and tile_ids:
         tile = board[tile_ids.pop(0)]
         tile.rotate_longway(1)
@@ -145,6 +169,7 @@ def _outside_box(board):
     col += max_width + 100
     row = row_bottom
     inner_wall_ids = list()
+    lgi('Start inner wall at %s', mt.delta())
     while row < 0 and tile_ids:
         tile = board[tile_ids.pop(0)]
         inner_wall_ids.append(tile.index)
@@ -155,20 +180,24 @@ def _outside_box(board):
         tile.move(col, row)
         row += tile.height
         prev_tile = tile
+    lgi('end initial placement at %s', mt.delta())
     return tile_ids, col + max_width + 100, row_bottom, inner_wall_ids
 
 
-def _move_left(board, tile_ids, is_under):
+def _move_left(board, tile_ids, mt):
     furthest_left = list()
     cb = board.make_cover_board()
-    lgi('cover board done')
+    lgi('cover board done at %s', mt.delta())
     for tile in (board[_] for _ in tile_ids):
+        if mt.is_over():
+            lgi('not even done with furthest left')
+            break
         min_col = -sys.maxint
         for row in range(tile.row, tile.row+tile.height):
             min_col = max(min_col, cb.find_min_col(tile.col-1, row))
         #lgi('for %s furthest left is %d', tile, min_col)
         furthest_left.append(min_col)
-    lgi('furthest left %s', furthest_left)
+    lgi('furthest left at %s : %s', mt.delta(), furthest_left)
     sliders = list()
     for left_col, tile_id in zip(furthest_left, tile_ids):
         tile = board[tile_id]
@@ -176,10 +205,10 @@ def _move_left(board, tile_ids, is_under):
             sliders.append(tile)
         else:
             tile.move(left_col+1, tile.row)
-    lgi('left with %d sliders', len(sliders))
+    lgi('left with %d sliders at %s', len(sliders), mt.delta())
     cb = board.make_cover_board()
     for tile in sliders:
-        if not is_under():
+        if mt.is_over():
             break
         # see what is one row beneath me
         min_col1 = cb.find_min_col(tile.col-1, tile.row - 1)
@@ -194,8 +223,9 @@ def _move_left(board, tile_ids, is_under):
             tile.move(min_col+1, tile.row)
             #lgi('slid1 %s', tile)
     cb = board.make_cover_board()
+    lgi('sliders stage 2 at %s', mt.delta())
     for tile in sliders:
-        if not is_under():
+        if mt.is_over():
             break
         # see what is one row beneath me
         min_col1 = cb.find_min_col(tile.col-1, tile.row - 1)
@@ -211,10 +241,17 @@ def _move_left(board, tile_ids, is_under):
             #lgi('slid2 %s', tile)
 
 
-def box_layout(board, is_under):
-    tile_ids, col, row_bottom, inner_wall_ids= _outside_box(board)
+def box_layout(board, mt):
+    tile_ids, col, row_bottom, inner_wall_ids = _outside_box(board, mt)
+    # for now just place the remaining outside the box
+    row = 1050
+    my_col = 0
+    for tile in (board[_] for _ in tile_ids):
+        tile.move(my_col, row)
+        my_col += tile.width
+    lgi('At %s done with placement phase 1', mt.delta())
     tile_ids = list(reversed(tile_ids))
-    lgi('final (%d): %s', len(tile_ids), tile_ids)
+    lgi('final at %s (%d): %s', mt.delta(), len(tile_ids), tile_ids)
     total_height = 0
     for tile in (board[_] for _ in tile_ids):
         total_height += tile.min_dim
@@ -226,7 +263,10 @@ def box_layout(board, is_under):
         tile.move(0, row)
         row += tile.height + spacing
     lgi('left: %s %s', tile_ids, inner_wall_ids)
-    _move_left(board, inner_wall_ids, is_under)
+    lgi('enter move left at %s', mt.delta())
+    if mt.is_over():
+        return
+    _move_left(board, inner_wall_ids, mt)
 
 
 def simple_layout(board):
@@ -302,15 +342,9 @@ class RectanglesAndHoles(object):
         pass
 
     def place(self, A, B):
-        start_time = datetime.datetime.now()
-        end = start_time + datetime.timedelta(seconds=60)
-        def is_under():
-            return datetime.datetime.now() <= end
-
+        mt = MyTimer()
         board = Board(A, B)
-        box_layout(board, is_under)
-        delta_time = datetime.datetime.now() - start_time
-        delta_seconds = delta_time.seconds + delta_time.microseconds / 1000000.
-        lgi('Total time %s', delta_seconds)
+        box_layout(board, mt)
+        lgi('Total time %s', mt.delta())
         sys.stderr.flush()
         return board.array_out()
